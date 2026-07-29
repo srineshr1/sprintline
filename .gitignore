@@ -1,0 +1,23 @@
+# Python
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/data/
+backend/.pytest_cache/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Env / OS
+.env
+.env.*
+!.env.example
+.DS_Store
+*.log
+.idea/
+.vscode/
