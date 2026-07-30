@@ -23,8 +23,13 @@ def get_settings() -> "Settings":
 class Settings:
     def __init__(self) -> None:
         self.groq_api_key: str = (os.environ.get("GROQ_API_KEY") or "").strip()
+        # Quality tasks: backlog generate, sprint plan, standup
         self.groq_model: str = (
             os.environ.get("GROQ_MODEL") or "llama-3.3-70b-versatile"
+        ).strip()
+        # Cheap/fast model for bulk import enrich (token-frugal)
+        self.groq_import_model: str = (
+            os.environ.get("GROQ_IMPORT_MODEL") or "llama-3.1-8b-instant"
         ).strip()
         self.groq_base_url: str = (
             os.environ.get("GROQ_BASE_URL") or "https://api.groq.com/openai/v1"
@@ -51,6 +56,7 @@ class Settings:
             "mode": self.ai_mode,
             "provider": "groq" if self.use_llm() else "stub",
             "model": self.groq_model if self.use_llm() else None,
+            "import_model": self.groq_import_model if self.use_llm() else None,
             "configured": self.has_groq_key,
             "llm_active": self.use_llm(),
         }

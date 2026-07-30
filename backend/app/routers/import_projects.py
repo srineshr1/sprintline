@@ -1,19 +1,10 @@
 """Scan a local projects directory and import folders as projects.
 
-Two endpoints mirror the UI flow:
+* ``POST /api/import/scan``  — **always heuristic only** (no Groq). Fast preview.
+* ``POST /api/import/apply`` — create/re-sync selected folders; optional AI enrich
+  (compact card + cheap import model + disk cache) **only for selected** folders.
 
-* ``POST /api/import/scan``  — dry run. Reads the filesystem, writes nothing,
-  and annotates each folder with whether it was imported before.
-  With ``use_ai=true`` (default), key files are packed and sent to Groq for
-  brief/goals/backlog enrichment.
-* ``POST /api/import/apply`` — creates (or re-syncs) the selected folders.
-
-Idempotency: ``Project.source_path`` holds the absolute folder path. A folder
-that already has a project re-syncs — only todos whose titles aren't already
-stories get added, so existing edits, points and statuses survive a re-scan.
-
-Each folder is committed on its own, so one bad folder can't roll back the
-others; failures come back in ``errors``.
+This split avoids burning the free-tier daily token budget on bulk scans.
 """
 
 from __future__ import annotations
@@ -62,7 +53,7 @@ def _status_counts(epics: list[dict]) -> dict[str, int]:
 
 
 def _enrich_with_ai(preview: dict) -> dict:
-    """Pack folder files + call Groq; merge onto heuristic preview."""
+    """Compact-card Groq enrich; merge onto heuristic preview."""
     settings = get_settings()
     if not settings.use_llm():
         preview["ai_used"] = False
@@ -73,8 +64,10 @@ def _enrich_with_ai(preview: dict) -> dict:
     result = ai_agents.analyze_project_folder(
         preview["source_path"],
         heuristic=preview,
+        use_cache=True,
     )
     preview["codebase_context"] = result.get("codebase_context")
+    preview["ai_cached"] = bool(result.get("cached"))
     if not result.get("ok"):
         preview["ai_used"] = False
         preview["ai_agent"] = None
@@ -93,7 +86,7 @@ def _enrich_with_ai(preview: dict) -> dict:
     if result.get("brief"):
         preview["brief"] = result["brief"]
         if not preview.get("brief_source"):
-            preview["brief_source"] = "ai:codebase"
+            preview["brief_source"] = "ai:compact"
     if result.get("goals"):
         preview["goals"] = result["goals"]
     if result.get("constraints"):
@@ -106,41 +99,30 @@ def _enrich_with_ai(preview: dict) -> dict:
         preview["status_counts"] = _status_counts(preview["epics"])
         preview["sample_titles"] = [s["title"] for s in all_stories[:4]]
         sources = list(preview.get("story_sources") or [])
-        if "ai:codebase" not in sources:
-            sources.append("ai:codebase")
+        tag = "ai:cache" if result.get("cached") else "ai:compact"
+        if tag not in sources:
+            sources.append(tag)
         preview["story_sources"] = sources
     return preview
 
 
-def _scan_payload(
-    root_path: str | None,
-    use_ai: bool,
-    *,
-    only_folders: set[str] | None = None,
-) -> dict:
-    result = importer.scan(root_path)
-    settings = get_settings()
-    # Only run AI when requested and LLM is live. Sequential to stay under rate limits.
-    if use_ai and settings.use_llm():
-        enriched = []
-        for preview in result["projects"]:
-            if only_folders is not None and preview["folder"] not in only_folders:
-                preview.setdefault("ai_used", False)
-                enriched.append(preview)
-                continue
-            try:
-                enriched.append(_enrich_with_ai(preview))
-            except Exception as exc:  # noqa: BLE001 — keep scan resilient
-                preview["ai_used"] = False
-                preview["llm_error"] = str(exc)[:200]
-                enriched.append(preview)
-        result["projects"] = enriched
-        result["total_stories"] = sum(p.get("story_count") or 0 for p in enriched)
-    else:
-        for preview in result["projects"]:
-            preview.setdefault("ai_used", False)
-    result["use_ai"] = bool(use_ai and settings.use_llm())
-    result["ai_status"] = settings.ai_status()
+def _annotate_existing(db: Session, result: dict) -> dict:
+    known = _projects_by_source(db)
+    for preview in result["projects"]:
+        existing = known.get(preview["source_path"])
+        if existing is None:
+            preview["existing_project_id"] = None
+            preview["new_story_count"] = preview["story_count"]
+            continue
+        seen = _existing_story_keys(db, existing.id)
+        fresh = sum(
+            1
+            for epic in preview["epics"]
+            for story in epic["stories"]
+            if importer.story_key(story["title"]) not in seen
+        )
+        preview["existing_project_id"] = existing.id
+        preview["new_story_count"] = fresh
     return result
 
 
@@ -159,30 +141,25 @@ def scan_directory(
     body: schemas.ImportScanRequest = schemas.ImportScanRequest(),
     db: Session = Depends(get_db),
 ):
-    """Dry-run preview of importable projects. Never writes to the database."""
+    """Heuristic dry-run only. Never calls Groq (use_ai is ignored for cost safety)."""
     try:
-        result = _scan_payload(body.root_path, body.use_ai)
+        result = importer.scan(body.root_path)
     except importer.ImportError_ as exc:
         raise HTTPException(400, str(exc)) from None
 
-    known = _projects_by_source(db)
+    settings = get_settings()
     for preview in result["projects"]:
-        existing = known.get(preview["source_path"])
-        if existing is None:
-            preview["existing_project_id"] = None
-            preview["new_story_count"] = preview["story_count"]
-            continue
-        seen = _existing_story_keys(db, existing.id)
-        fresh = sum(
-            1
-            for epic in preview["epics"]
-            for story in epic["stories"]
-            if importer.story_key(story["title"]) not in seen
-        )
-        preview["existing_project_id"] = existing.id
-        preview["new_story_count"] = fresh
+        preview.setdefault("ai_used", False)
+        preview.setdefault("ai_agent", None)
+        preview.setdefault("llm_error", None)
 
-    return result
+    result["use_ai"] = False  # scan is never AI
+    result["ai_status"] = settings.ai_status()
+    result["ai_note"] = (
+        "Scan is heuristic-only (no Groq). Enable AI enrich on Import for "
+        "selected folders only — compact card + cheap model + cache."
+    )
+    return _annotate_existing(db, result)
 
 
 @router.post("/apply", response_model=schemas.ImportApplyResponse)
@@ -190,27 +167,46 @@ def apply_import(
     body: schemas.ImportApplyRequest = schemas.ImportApplyRequest(),
     db: Session = Depends(get_db),
 ):
-    """Create or re-sync the selected folders as projects."""
-    wanted = {s.strip() for s in body.selections if s and s.strip()}
+    """Create or re-sync selected folders. Optional AI only for those folders."""
     try:
-        # Only AI-enrich folders we will import (saves tokens + latency).
-        result = _scan_payload(
-            body.root_path,
-            body.use_ai,
-            only_folders=wanted or None,
-        )
+        result = importer.scan(body.root_path)
     except importer.ImportError_ as exc:
         raise HTTPException(400, str(exc)) from None
+
+    wanted = {s.strip() for s in body.selections if s and s.strip()}
+    settings = get_settings()
+    use_ai = bool(body.use_ai and settings.use_llm())
 
     imported: list[dict] = []
     skipped: list[dict[str, str]] = list(result["skipped"])
     errors: list[dict[str, str]] = list(result["errors"])
+    ai_errors = 0
+    ai_ok = 0
+    ai_cached = 0
 
     for preview in result["projects"]:
         folder = preview["folder"]
-        # Selections name folders; empty selection means "import everything".
         if wanted and folder not in wanted and preview["source_path"] not in wanted:
             continue
+
+        if use_ai:
+            try:
+                preview = _enrich_with_ai(preview)
+                if preview.get("ai_used"):
+                    ai_ok += 1
+                    if preview.get("ai_cached"):
+                        ai_cached += 1
+                elif preview.get("llm_error"):
+                    ai_errors += 1
+                    # Stop further AI calls if we hit daily quota — save the rest
+                    err = (preview.get("llm_error") or "").lower()
+                    if "daily" in err or "token limit" in err:
+                        use_ai = False  # remaining folders: heuristic only
+            except Exception as exc:  # noqa: BLE001
+                preview["ai_used"] = False
+                preview["llm_error"] = str(exc)[:200]
+                ai_errors += 1
+
         if preview["story_count"] == 0 and not preview["brief"]:
             skipped.append({"folder": folder, "reason": "nothing to import"})
             continue
@@ -229,6 +225,9 @@ def apply_import(
         "projects_created": sum(1 for r in imported if not r["resynced"]),
         "projects_resynced": sum(1 for r in imported if r["resynced"]),
         "stories_created": sum(r["stories_created"] for r in imported),
+        "ai_enriched": ai_ok,
+        "ai_cached": ai_cached,
+        "ai_errors": ai_errors,
     }
 
 
@@ -254,8 +253,6 @@ def _apply_one(db: Session, preview: dict) -> dict:
         db.flush()
         seen: set[str] = set()
     else:
-        # Re-sync: fill in a brief that was empty before, but never clobber
-        # one the user has since written. Same for goals/constraints.
         if not (project.brief or "").strip() and preview["brief"]:
             project.brief = preview["brief"]
         if project.goals in (None, "", "[]") and preview["goals"]:
@@ -276,7 +273,6 @@ def _apply_one(db: Session, preview: dict) -> dict:
     stories_created = 0
 
     for group in preview["epics"]:
-        # Only the stories that aren't already in this project.
         fresh = [
             s for s in group["stories"] if importer.story_key(s["title"]) not in seen
         ]
@@ -341,6 +337,7 @@ def _apply_one(db: Session, preview: dict) -> dict:
                     "sources": preview.get("story_sources"),
                     "ai_used": preview.get("ai_used"),
                     "ai_agent": preview.get("ai_agent"),
+                    "ai_cached": preview.get("ai_cached"),
                     "files_sent": (preview.get("codebase_context") or {}).get(
                         "file_paths"
                     ),
@@ -358,4 +355,6 @@ def _apply_one(db: Session, preview: dict) -> dict:
         "epics_created": epics_created,
         "stories_created": stories_created,
         "resynced": resynced,
+        "ai_used": bool(preview.get("ai_used")),
+        "ai_cached": bool(preview.get("ai_cached")),
     }

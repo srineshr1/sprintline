@@ -359,19 +359,22 @@ def analyze_project_folder(
     folder_path: str | Path,
     *,
     heuristic: Optional[dict[str, Any]] = None,
+    use_cache: bool = True,
 ) -> dict[str, Any]:
-    """Send a project folder's key files to Groq and get structured import data.
+    """Token-frugal import analysis: compact card + cheap model + disk cache.
 
-    Merges with optional heuristic scan (README/TODO parser) so we never lose
-    checklist items the model might drop.
+    Merges with optional heuristic scan (README/TODO parser) so checklist
+    items are never lost. Does **not** dump full source trees into the prompt.
     """
+    from . import ai_cache
+
     path = Path(folder_path)
-    # Compact pack for free-tier Groq TPM limits.
-    ctx = codebase.collect_project_context(
-        path, max_files=14, max_total_chars=14_000
-    )
-    ctx_summary = codebase.context_summary(ctx)
     settings = get_settings()
+    import_model = settings.groq_import_model
+
+    # Compact card only (README/manifests + shallow tree) — ~1–2k tokens.
+    ctx = codebase.collect_compact_card(path)
+    ctx_summary = codebase.context_summary(ctx)
 
     if not settings.use_llm() or not ctx.get("exists"):
         return {
@@ -379,38 +382,54 @@ def analyze_project_folder(
             "agent": "none",
             "codebase_context": ctx_summary,
             "error": "LLM off or path missing",
+            "cached": False,
         }
 
     heuristic = heuristic or {}
+    ckey = ai_cache.cache_key(path, import_model, mode="import_compact_v2")
+    if use_cache:
+        hit = ai_cache.get(ckey)
+        if hit and hit.get("ok"):
+            hit = dict(hit)
+            hit["cached"] = True
+            hit["codebase_context"] = ctx_summary
+            # Still merge latest heuristic todos (may have changed titles only)
+            if heuristic.get("epics") and hit.get("epics"):
+                hit["epics"] = _merge_epics(heuristic["epics"], hit["epics"])
+                flat = [s for e in hit["epics"] for s in e.get("stories") or []]
+                hit["story_count"] = len(flat)
+                hit["epic_count"] = len(hit["epics"])
+            return hit
+
     system = (
-        "You analyze software project directories for an Agile import tool. "
-        "Read the file tree and sources carefully. Infer product purpose, goals, "
-        "constraints, and a practical backlog of work items. "
-        "Prefer real work implied by the code and docs over generic filler. "
-        "JSON only."
+        "You analyze software project folders for an Agile import tool. "
+        "You only see a compact card (tree + README/manifests), not full source. "
+        "Infer purpose, goals, constraints, tech stack, and a short realistic backlog. "
+        "JSON only. Be concise."
     )
-    user = f"""Folder name: {path.name}
-Heuristic scan (from README/TODO parsers — may be incomplete):
+    user = f"""Folder: {path.name}
+
+Heuristic (may be incomplete):
 {json.dumps({
     'name': heuristic.get('name'),
-    'brief': heuristic.get('brief'),
-    'goals': heuristic.get('goals'),
-    'constraints': heuristic.get('constraints'),
+    'brief': (heuristic.get('brief') or '')[:500],
+    'goals': (heuristic.get('goals') or [])[:6],
+    'constraints': (heuristic.get('constraints') or [])[:6],
     'story_count': heuristic.get('story_count'),
-    'sample_titles': heuristic.get('sample_titles'),
+    'sample_titles': (heuristic.get('sample_titles') or [])[:6],
     'story_sources': heuristic.get('story_sources'),
 }, indent=2)}
 
-Repository:
-{codebase.format_context_for_prompt(ctx)}
+Compact repository card:
+{codebase.format_context_for_prompt(ctx, max_chars=5_000)}
 
-Return:
+Return JSON:
 {{
-  "name": "human product name",
-  "brief": "2–5 sentence product brief",
+  "name": "product name",
+  "brief": "2-4 sentences",
   "goals": ["..."],
   "constraints": ["..."],
-  "analysis": "short narrative of what this codebase is and its maturity",
+  "analysis": "1-2 sentences maturity/purpose",
   "tech_stack": ["..."],
   "epics": [
     {{
@@ -419,30 +438,48 @@ Return:
         {{
           "title": string,
           "description": string,
-          "points": 1|2|3|5|8|13,
+          "points": 1|2|3|5|8,
           "priority": "high"|"medium"|"low",
-          "status": "todo"|"in_progress"|"done",
+          "status": "todo",
           "rationale": string
         }}
       ]
     }}
   ],
-  "rationale": "how you used the files"
+  "rationale": "short"
 }}
 
 Rules:
-- Keep heuristic checklist stories when they exist (merge, don't discard)
-- Add stories for incomplete/obvious work from the code if backlog is thin
-- Max 4 epics, 20 stories total
-- Mark status done only when evidence suggests complete
+- Keep/merge heuristic checklist stories
+- Max 3 epics, 10 stories total
+- Prefer concrete work over filler
 """
 
     try:
-        data = chat_json(system=system, user=user, temperature=0.3, max_tokens=3000)
+        data = chat_json(
+            system=system,
+            user=user,
+            temperature=0.25,
+            max_tokens=1800,
+            model=import_model,
+            retries=1,
+        )
         epics = _coerce_epics(data)
-        # Merge heuristic epics so TODOs are never lost
         if heuristic.get("epics"):
             epics = _merge_epics(heuristic["epics"], epics)
+        # Cap after merge
+        total_stories = 0
+        capped: list[dict[str, Any]] = []
+        for ep in epics:
+            room = 10 - total_stories
+            if room <= 0:
+                break
+            stories = (ep.get("stories") or [])[:room]
+            if not stories:
+                continue
+            capped.append({**ep, "stories": stories})
+            total_stories += len(stories)
+        epics = capped
 
         name = str(data.get("name") or heuristic.get("name") or path.name).strip()
         brief = str(data.get("brief") or heuristic.get("brief") or "").strip()
@@ -458,31 +495,38 @@ Rules:
             constraints = list(heuristic.get("constraints") or [])
 
         flat = [s for e in epics for s in e.get("stories") or []]
-        return {
+        result = {
             "ok": True,
-            "agent": model_label(),
+            "agent": model_label(import_model),
             "name": name[:200],
             "brief": brief[:1200],
             "goals": goals,
             "constraints": constraints,
             "epics": epics,
-            "analysis": str(data.get("analysis") or "").strip()[:1500],
+            "analysis": str(data.get("analysis") or "").strip()[:800],
             "tech_stack": [
                 str(t).strip()
                 for t in (data.get("tech_stack") or [])
                 if str(t).strip()
             ][:12],
-            "rationale": str(data.get("rationale") or "").strip()[:1200],
+            "rationale": str(data.get("rationale") or "").strip()[:600],
             "codebase_context": ctx_summary,
             "story_count": len(flat),
             "epic_count": len(epics),
+            "cached": False,
         }
+        if use_cache:
+            # Don't store codebase_context bodies-heavy; summary is fine
+            to_store = {k: v for k, v in result.items() if k != "codebase_context"}
+            ai_cache.put(ckey, to_store)
+        return result
     except LLMError as exc:
         return {
             "ok": False,
             "agent": "none",
             "error": str(exc),
             "codebase_context": ctx_summary,
+            "cached": False,
         }
 
 

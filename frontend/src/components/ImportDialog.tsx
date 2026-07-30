@@ -14,6 +14,8 @@ import { useToast } from './Toast'
 
 type Phase = 'form' | 'preview' | 'done'
 
+type LogLine = { id: number; text: string }
+
 function CheckIcon() {
   return (
     <svg
@@ -34,6 +36,55 @@ function CheckIcon() {
 
 function plural(n: number, one: string, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`
+}
+
+/** Status steps shown while scan/import runs (frontend progress narrative). */
+function scanLogScript(root: string, withAi: boolean): string[] {
+  const dir = root.trim() || 'projects directory'
+  const short =
+    dir.length > 48 ? `…${dir.slice(-46)}` : dir
+  const base = [
+    `Resolving ${short}`,
+    'Listing project folders',
+    'Reading README / PROJECT.md',
+    'Parsing TODO and backlog files',
+    'Building folder previews',
+  ]
+  if (!withAi) {
+    return [...base, 'Heuristic merge complete', 'Preparing selection list']
+  }
+  return [
+    ...base,
+    'Packing key source files (skip .env, node_modules)',
+    'Sending file pack to Groq',
+    'Groq drafting brief + goals',
+    'Groq suggesting backlog stories',
+    'Merging AI with checklist todos',
+    'Scoring epics and priorities',
+    'Waiting on model response…',
+    'Finalizing import preview',
+  ]
+}
+
+function applyLogScript(count: number, withAi: boolean): string[] {
+  if (!withAi) {
+    return [
+      `Importing ${plural(count, 'selected project')}`,
+      'Heuristic re-scan of selected folders',
+      'Writing projects to database',
+      'Creating epics and stories',
+      'Almost done…',
+    ]
+  }
+  return [
+    `Importing ${plural(count, 'selected project')}`,
+    'Building compact cards (README + manifests)',
+    'Checking AI cache for unchanged folders',
+    'Groq 8B enrich on selected only…',
+    'Merging AI backlog with TODOs',
+    'Writing projects to database',
+    'Almost done…',
+  ]
 }
 
 export function ImportDialog({
@@ -61,10 +112,14 @@ export function ImportDialog({
   >([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [result, setResult] = useState<ImportApplyResponse | null>(null)
+  /** AI runs on Import only (selected folders), never on Scan. */
   const [useAi, setUseAi] = useState(true)
   const [aiStatus, setAiStatus] = useState<string | null>(null)
+  const [scanHint, setScanHint] = useState<string | null>(null)
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set())
+  const [logLines, setLogLines] = useState<LogLine[]>([])
   const pathRef = useRef<HTMLInputElement>(null)
+  const logIdRef = useRef(0)
 
   // Pre-fill the configured root the first time the dialog opens.
   useEffect(() => {
@@ -97,28 +152,75 @@ export function ImportDialog({
       setScanErrors([])
       setSkipped(0)
       setAiStatus(null)
+      setScanHint(null)
       setExpandedFiles(new Set())
+      setLogLines([])
     }, 240)
     return () => window.clearTimeout(t)
   }, [open])
 
+  // Live 3-line activity log while scan/import is in flight.
+  useEffect(() => {
+    if (!scanning && !applying) return
+
+    // Scan is always heuristic; AI messages only while applying with enrich on.
+    const script = applying
+      ? applyLogScript(selected.size || 1, useAi)
+      : scanLogScript(rootPath, false)
+
+    let step = 0
+    const push = (text: string) => {
+      logIdRef.current += 1
+      const id = logIdRef.current
+      setLogLines((prev) => [...prev, { id, text }].slice(-8))
+    }
+
+    push(script[0] ?? 'Working…')
+    step = 1
+
+    const tick = window.setInterval(() => {
+      if (step < script.length) {
+        push(script[step])
+        step += 1
+      } else {
+        // Soft loop on last phases so long Groq calls still feel alive
+        const tail = applying
+          ? ['Still writing…', 'Committing batch…', 'Hang tight…']
+          : useAi
+            ? [
+                'Still waiting on Groq…',
+                'Model generating backlog…',
+                'Large folders take a bit…',
+              ]
+            : ['Still scanning…', 'Almost there…']
+        push(tail[Math.floor(Math.random() * tail.length)])
+      }
+    }, applying ? 900 : useAi ? 1100 : 700)
+
+    return () => window.clearInterval(tick)
+  }, [scanning, applying]) // eslint-disable-line react-hooks/exhaustive-deps -- only restart on busy phase
+
   const scan = useCallback(async () => {
     setScanning(true)
     setError(null)
+    setLogLines([])
+    logIdRef.current = 0
     try {
-      const res = await api.importScan(rootPath.trim() || undefined, useAi)
+      // Scan is always free/heuristic (backend ignores use_ai).
+      const res = await api.importScan(rootPath.trim() || undefined, false)
       setPreviews(res.projects)
       setSkipped(res.skipped.length)
       setScanErrors(res.errors)
       setRootPath(res.root_path)
+      setScanHint(res.ai_note || null)
       if (res.ai_status) {
         const a = res.ai_status
         setAiStatus(
           a.llm_active
-            ? `Groq · ${a.model || 'model'}`
+            ? `Import AI: ${a.import_model || a.model || 'groq'} (selected folders only)`
             : a.configured
               ? 'AI idle (stub mode)'
-              : 'No GROQ_API_KEY — heuristic scan only',
+              : 'No GROQ_API_KEY — heuristic import only',
         )
       } else {
         setAiStatus(null)
@@ -138,8 +240,28 @@ export function ImportDialog({
       if (res.projects.length === 0) {
         setError('No project folders found in that directory.')
       }
+      logIdRef.current += 1
+      setLogLines((prev) =>
+        [
+          ...prev,
+          {
+            id: logIdRef.current,
+            text: `Done · ${plural(res.projects.length, 'project')} · ${plural(res.total_stories, 'story', 'stories')}`,
+          },
+        ].slice(-8),
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scan failed')
+      logIdRef.current += 1
+      setLogLines((prev) =>
+        [
+          ...prev,
+          {
+            id: logIdRef.current,
+            text: `Failed · ${err instanceof Error ? err.message : 'scan error'}`,
+          },
+        ].slice(-8),
+      )
     } finally {
       setScanning(false)
     }
@@ -149,6 +271,8 @@ export function ImportDialog({
     if (selected.size === 0) return
     setApplying(true)
     setError(null)
+    setLogLines([])
+    logIdRef.current = 0
     try {
       const res = await api.importApply(
         rootPath.trim() || undefined,
@@ -163,6 +287,14 @@ export function ImportDialog({
       if (created) parts.push(`Imported ${plural(created, 'project')}`)
       if (resynced) parts.push(`re-synced ${plural(resynced, 'project')}`)
       parts.push(`${plural(res.stories_created, 'story', 'stories')}`)
+      if (res.ai_enriched) {
+        parts.push(
+          `AI ${res.ai_enriched}${res.ai_cached ? ` (${res.ai_cached} cached)` : ''}`,
+        )
+      }
+      if (res.ai_errors) {
+        parts.push(`${res.ai_errors} AI skip(s)`)
+      }
       toast(parts.join(', '))
       onImported(res)
     } catch (err) {
@@ -217,7 +349,7 @@ export function ImportDialog({
         <p className="page-sub">
           {phase === 'done'
             ? 'Import complete.'
-            : 'Scan project folders, pack key source files, and optionally send them to Groq for brief + backlog analysis.'}
+            : 'Scan is free (README/TODOs only). Optionally enrich selected folders with Groq on Import — compact card, cheap model, cached.'}
         </p>
       </div>
 
@@ -331,9 +463,7 @@ export function ImportDialog({
               >
                 {scanning && <span className="spinner" aria-hidden />}
                 {scanning
-                  ? useAi
-                    ? 'Scanning + AI…'
-                    : 'Scanning…'
+                  ? 'Scanning…'
                   : phase === 'preview'
                     ? 'Re-scan'
                     : 'Scan'}
@@ -347,12 +477,17 @@ export function ImportDialog({
                 disabled={busy}
                 onChange={(e) => setUseAi(e.target.checked)}
               />
-              Send key files to Groq (true AI analysis of each folder)
+              AI enrich on Import (selected folders only — not during Scan)
             </label>
 
             {aiStatus && (
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                AI: {aiStatus}
+                {aiStatus}
+              </div>
+            )}
+            {scanHint && (
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                {scanHint}
               </div>
             )}
 
@@ -364,6 +499,27 @@ export function ImportDialog({
             )}
 
             {error && <div className="alert">{error}</div>}
+
+            {(scanning || applying) && logLines.length > 0 && (
+              <div
+                className="import-log"
+                aria-live="polite"
+                aria-busy="true"
+                aria-label={scanning ? 'Scan progress' : 'Import progress'}
+              >
+                {logLines.slice(-3).map((line, i, arr) => (
+                  <div
+                    key={line.id}
+                    className={`import-log-line${i === arr.length - 1 ? ' is-latest' : ''}`}
+                  >
+                    <span className="import-log-prompt" aria-hidden>
+                      {i === arr.length - 1 ? '▸' : '·'}
+                    </span>
+                    <span className="import-log-text">{line.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {scanning && (
               <div className="import-list" aria-hidden>

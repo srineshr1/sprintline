@@ -235,11 +235,13 @@ class CriticOnlyResponse(BaseModel):
 
 # ---- Directory import ----
 class ImportScanRequest(BaseModel):
-    """Dry-run scan. ``root_path`` must resolve inside an allowed root."""
+    """Dry-run scan. ``root_path`` must resolve inside an allowed root.
+
+    Scan is always heuristic-only (use_ai ignored) to protect token budgets.
+    """
 
     root_path: Optional[str] = None
-    # When true, pack key files and ask Groq to enrich brief/goals/backlog.
-    use_ai: bool = True
+    use_ai: bool = False
 
 
 class ImportStoryPreview(BaseModel):
@@ -281,6 +283,7 @@ class ImportProjectPreview(BaseModel):
     tech_stack: list[str] = Field(default_factory=list)
     codebase_context: Optional[CodebaseContextMeta] = None
     llm_error: Optional[str] = None
+    ai_cached: bool = False
 
 
 class ImportScanResponse(BaseModel):
@@ -293,12 +296,14 @@ class ImportScanResponse(BaseModel):
     total_stories: int = 0
     use_ai: bool = False
     ai_status: Optional[dict[str, Any]] = None
+    ai_note: Optional[str] = None
 
 
 class ImportApplyRequest(BaseModel):
     root_path: Optional[str] = None
     # Folder names to import. Empty/omitted means "everything found".
     selections: list[str] = Field(default_factory=list)
+    # AI only runs for selected folders (compact + cheap model + cache).
     use_ai: bool = True
 
 
@@ -310,6 +315,8 @@ class ImportApplyResult(BaseModel):
     epics_created: int = 0
     stories_created: int = 0
     resynced: bool = False
+    ai_used: bool = False
+    ai_cached: bool = False
 
 
 class ImportApplyResponse(BaseModel):
@@ -320,6 +327,9 @@ class ImportApplyResponse(BaseModel):
     projects_created: int = 0
     projects_resynced: int = 0
     stories_created: int = 0
+    ai_enriched: int = 0
+    ai_cached: int = 0
+    ai_errors: int = 0
 
 
 class ImportRootsResponse(BaseModel):

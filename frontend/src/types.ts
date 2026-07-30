@@ -103,6 +103,7 @@ export interface ImportProjectPreview {
   tech_stack?: string[]
   codebase_context?: CodebaseContextMeta | null
   llm_error?: string | null
+  ai_cached?: boolean
 }
 
 export interface ImportScanResponse {
@@ -114,10 +115,12 @@ export interface ImportScanResponse {
   total_projects: number
   total_stories: number
   use_ai?: boolean
+  ai_note?: string | null
   ai_status?: {
     mode: string
     provider: string
     model?: string | null
+    import_model?: string | null
     configured: boolean
     llm_active: boolean
   }
@@ -131,6 +134,8 @@ export interface ImportApplyResult {
   epics_created: number
   stories_created: number
   resynced: boolean
+  ai_used?: boolean
+  ai_cached?: boolean
 }
 
 export interface ImportApplyResponse {
@@ -141,6 +146,9 @@ export interface ImportApplyResponse {
   projects_created: number
   projects_resynced: number
   stories_created: number
+  ai_enriched?: number
+  ai_cached?: number
+  ai_errors?: number
 }
 
 export interface ImportRootsResponse {

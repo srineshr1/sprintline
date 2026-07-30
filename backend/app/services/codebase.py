@@ -381,3 +381,116 @@ def context_summary(ctx: dict[str, Any]) -> dict[str, Any]:
         "note": ctx.get("note") or "",
         "skipped_dirs": list(ctx.get("skipped_dirs") or [])[:20],
     }
+
+
+# Manifest / docs only — used for token-frugal import AI (not full source dump)
+_COMPACT_NAMES = {
+    "readme.md",
+    "project.md",
+    "package.json",
+    "pyproject.toml",
+    "cargo.toml",
+    "go.mod",
+    "composer.json",
+    "gemfile",
+    "requirements.txt",
+    "todo.md",
+    "todos.md",
+    "backlog.md",
+    "tasks.md",
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+}
+
+
+def collect_compact_card(
+    root: str | Path,
+    *,
+    max_total_chars: int = 4_500,
+    readme_chars: int = 1_200,
+) -> dict[str, Any]:
+    """Token-frugal pack: shallow tree + README/manifests only (no full src dump).
+
+    Aimed at import enrichment on free-tier Groq (~1–2k tokens/folder).
+    """
+    base = collect_project_context(
+        root, max_files=8, max_total_chars=max_total_chars
+    )
+    if not base.get("exists"):
+        return base
+
+    # Prefer only high-signal names; re-read with tighter caps
+    root_path = Path(base["root"])
+    files: list[dict[str, Any]] = []
+    total = 0
+    tree_lines = (base.get("tree") or "").splitlines()[:80]
+    tree = "\n".join(tree_lines)
+
+    # Walk top 2 levels for compact-name files
+    found: list[tuple[int, str, Path]] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(root_path):
+            rel_dir = os.path.relpath(dirpath, root_path)
+            depth = 0 if rel_dir == "." else rel_dir.count(os.sep) + 1
+            if depth > 2:
+                dirnames.clear()
+                continue
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in SKIP_DIR_NAMES and not d.startswith(".")
+            ]
+            for name in filenames:
+                lower = name.lower()
+                if lower not in _COMPACT_NAMES and not lower.endswith(
+                    (".toml", ".md")
+                ):
+                    # allow one main entry if shallow
+                    if depth > 0 or lower not in {
+                        "main.py",
+                        "app.py",
+                        "index.ts",
+                        "index.tsx",
+                        "main.ts",
+                        "main.tsx",
+                    }:
+                        if lower not in _COMPACT_NAMES:
+                            continue
+                if _is_secret_name(name):
+                    continue
+                rel = name if rel_dir == "." else f"{rel_dir}/{name}".replace("\\", "/")
+                pri = 100 if lower in _COMPACT_NAMES else 40
+                if "readme" in lower:
+                    pri = 120
+                found.append((pri, rel, Path(dirpath) / name))
+    except OSError:
+        pass
+
+    found.sort(key=lambda t: (-t[0], t[1]))
+    for _pri, rel, full in found[:10]:
+        limit = readme_chars if "readme" in rel.lower() else 800
+        remaining = max_total_chars - total - len(tree)
+        if remaining < 200:
+            break
+        content = _safe_read(full, min(limit, remaining))
+        if not content.strip():
+            continue
+        files.append({"path": rel, "chars": len(content), "content": content})
+        total += len(content)
+
+    note = (
+        f"Compact card: {len(files)} docs/manifests, {total} chars + tree "
+        f"(no full source dump — import mode)."
+    )
+    return {
+        "root": str(root_path),
+        "exists": True,
+        "tree": tree,
+        "files": files,
+        "file_paths": [f["path"] for f in files],
+        "skipped_dirs": base.get("skipped_dirs") or [],
+        "total_chars": total + len(tree),
+        "note": note,
+        "mode": "compact",
+    }
