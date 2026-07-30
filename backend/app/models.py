@@ -28,6 +28,13 @@ class Project(Base):
     brief: Mapped[str] = mapped_column(Text, default="")
     goals: Mapped[str] = mapped_column(Text, default="[]")  # JSON list as string
     constraints: Mapped[str] = mapped_column(Text, default="[]")
+    # Absolute folder path this project was imported from. Doubles as the
+    # idempotency key for directory scans: re-importing the same folder
+    # re-syncs it instead of creating a duplicate. NULL for hand-made
+    # projects (SQLite allows many NULLs under a unique index).
+    source_path: Mapped[Optional[str]] = mapped_column(
+        String(1000), nullable=True, unique=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     epics: Mapped[list[Epic]] = relationship(

@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import type { Project } from '../types'
+import { ImportDialog } from '../components/ImportDialog'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 
@@ -12,6 +13,7 @@ export function HomePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showNew, setShowNew] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [name, setName] = useState('')
   const [brief, setBrief] = useState('')
   const [goals, setGoals] = useState('')
@@ -95,6 +97,13 @@ export function HomePage() {
         <div className="toolbar-spacer" />
         <button
           type="button"
+          className="btn"
+          onClick={() => setShowImport(true)}
+        >
+          Import from folder
+        </button>
+        <button
+          type="button"
           className="btn btn-primary"
           onClick={() => setShowNew(true)}
         >
@@ -109,23 +118,69 @@ export function HomePage() {
       )}
 
       {loading ? (
-        <div className="panel" style={{ padding: 16, display: 'grid', gap: 10 }}>
-          <div className="skeleton" style={{ width: '40%' }} />
-          <div className="skeleton" style={{ width: '70%' }} />
-          <div className="skeleton" style={{ width: '55%' }} />
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Stories</th>
+                <th>Sprint</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[0, 1, 2, 3].map((i) => (
+                <tr key={i}>
+                  <td>
+                    <div className="skeleton" style={{ width: '46%' }} />
+                    <div
+                      className="skeleton"
+                      style={{ width: '72%', height: 10, marginTop: 6 }}
+                    />
+                  </td>
+                  <td>
+                    <div className="skeleton" style={{ width: 24 }} />
+                  </td>
+                  <td>
+                    <div className="skeleton" style={{ width: 68 }} />
+                  </td>
+                  <td>
+                    <div className="skeleton" style={{ width: 60 }} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       ) : projects.length === 0 ? (
         <div className="panel empty">
           <p style={{ margin: '0 0 12px' }}>
-            Create a project from a brief to generate a backlog.
+            Create a project from a brief, or import existing folders with their
+            READMEs and todos.
           </p>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => setShowNew(true)}
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              justifyContent: 'center',
+              flexWrap: 'wrap',
+            }}
           >
-            New project
-          </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setShowImport(true)}
+            >
+              Import from folder
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setShowNew(true)}
+            >
+              New project
+            </button>
+          </div>
         </div>
       ) : (
         <div className="table-wrap">
@@ -142,11 +197,34 @@ export function HomePage() {
               {projects.map((p) => (
                 <tr
                   key={p.id}
-                  className="row-enter"
+                  tabIndex={0}
                   onClick={() => navigate(`/projects/${p.id}`)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      navigate(`/projects/${p.id}`)
+                    }
+                  }}
                 >
                   <td>
-                    <div style={{ fontWeight: 500 }}>{p.name}</div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontWeight: 500,
+                      }}
+                    >
+                      <span className="truncate">{p.name}</span>
+                      {p.source_path && (
+                        <span
+                          className="pill pill-muted"
+                          title={p.source_path}
+                        >
+                          imported
+                        </span>
+                      )}
+                    </div>
                     <div
                       className="truncate"
                       style={{
@@ -173,6 +251,14 @@ export function HomePage() {
           </table>
         </div>
       )}
+
+      <ImportDialog
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        onImported={() => {
+          void load()
+        }}
+      />
 
       <Modal
         open={showNew}
@@ -246,6 +332,7 @@ export function HomePage() {
               className="btn btn-primary"
               disabled={creating || !name.trim()}
             >
+              {creating && <span className="spinner" aria-hidden />}
               {creating ? 'Creating…' : 'Create project'}
             </button>
           </div>

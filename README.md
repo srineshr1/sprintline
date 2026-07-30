@@ -3,7 +3,7 @@
 **Product name:** Sprintline  
 **Official academic title:** AI-Enabled Intelligent Project Lifecycle Management System Using Generative AI and Agile Project Management  
 **Stack:** React + TypeScript + Vite + Tailwind · FastAPI · SQLite  
-**UI:** Light, dense workspace (Linear-inspired) — teal accent, IBM Plex Sans
+**UI:** Dense workspace (Linear-inspired) — teal accent, IBM Plex Sans, light + dark themes
 
 Product brief: [PROJECT.md](./PROJECT.md)
 
@@ -28,6 +28,8 @@ Product brief: [PROJECT.md](./PROJECT.md)
 
 | Feature | Status |
 |---------|--------|
+| Dark mode (system-aware, light/dark/system toggle) | ✅ |
+| Auto-import projects + todos from a local folder | ✅ |
 | Project workspace (brief, goals, constraints) | ✅ |
 | AI backlog generator (epics → stories → AC → points + rationale) | ✅ pipeline + stub |
 | Critic quality pass | ✅ |
@@ -39,7 +41,7 @@ Product brief: [PROJECT.md](./PROJECT.md)
 | Export Markdown / JSON | ✅ |
 | College docs package | ✅ |
 
-AI agents use **deterministic stubs** that return structured JSON + rationale (offline demo). Swap internals for Groq/Ollama/OpenAI later without changing the REST contract.
+AI agents use **Groq** when `GROQ_API_KEY` is set in `backend/.env` (packs real project files for import + backlog generation). Without a key they fall back to **deterministic stubs** so the app still demos offline.
 
 ## Quick start
 
@@ -73,6 +75,63 @@ npm run dev
 - UI: http://127.0.0.1:5173  
 - Vite proxies `/api` → backend.
 
+### Environment variables
+
+Copy `backend/.env.example` → `backend/.env`:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GROQ_API_KEY` | — | Enables real AI (Groq). Required for true LLM backlog / import analysis. |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Chat model id on Groq. |
+| `SPRINTLINE_AI_MODE` | `auto` | `auto` (Groq if key set), `groq`, or `stub` (force offline). |
+| `PROJECTS_ROOT` | repo's parent directory | Folder scanned by **Import from folder**. Scanning is confined to it. |
+| `PROJECTS_ROOTS` | — | Extra allowed roots, `:`-separated (e.g. `/work/a:/work/b`). |
+| `SPRINTLINE_DB_PATH` | `backend/data/app.db` | Redirect the SQLite file. The test suite sets this so runs don't touch your dev data. |
+
+```bash
+# backend/.env
+GROQ_API_KEY=gsk_...
+PROJECTS_ROOT=~/Projects
+```
+
+```bash
+PROJECTS_ROOT=~/Projects uvicorn app.main:app --reload --port 8000
+```
+
+**Import + AI:** Scan packs README, package manifests, and key source files (skips `.env`, `node_modules`, binaries) and sends them to Groq. The UI lists every file path that was included. **Generate backlog** on an imported project re-reads that `source_path` the same way.
+
+Paths outside the allowed roots are rejected (400), including `..` traversal
+and symlinks pointing out of the root.
+
+### Import from a projects folder
+
+**Projects → Import from folder → Scan**, review the preview, tick the folders
+you want, then **Import**. Nothing is written until you apply.
+
+Per folder, the scanner infers:
+
+- **name** — folder name, humanized (`my_cool-app` → "My Cool App")
+- **brief** — intro prose of `README.md` / `PROJECT.md` / `brief.md` / `description.md`
+- **goals / constraints** — bullets under those headings (or "Non-goals")
+- **stories** — from `TODO.md` / `TODOS.md` / `BACKLOG.md` / `TASKS.md`
+  (`##` headings become epics), `todos.json` / `backlog.json` / `tasks.json`,
+  or a plain `.todo` file
+
+Checklist state maps `- [ ]` → *To do*, `- [~]` → *In progress*, `- [x]` →
+*Done*. A trailing `(5)` sets points and `[high]` sets priority; defaults are 3
+points / medium.
+
+Re-importing is safe: a folder is keyed by its path, so a second import
+**re-syncs** it — only todos that aren't already stories get added, and your
+edits, points and statuses are left alone.
+
+### Theme
+
+The sun/moon button (sidebar footer, and the mobile top bar) cycles
+**light → dark → system**. The choice persists in `localStorage`; `system`
+follows `prefers-color-scheme` live. A dot on the button means "following
+system".
+
 ### Tests
 
 ```bash
@@ -97,10 +156,10 @@ Full script: [docs/DEMO_SCRIPT.md](./docs/DEMO_SCRIPT.md).
 ├── docs/                 # Abstract, architecture, demo, evaluation
 ├── backend/
 │   ├── app/
-│   │   ├── routers/      # projects, backlog, sprints, ai, export
-│   │   └── services/     # ai_stub, critic, evaluation, pipeline, export
-│   └── tests/            # pure logic + API e2e
-└── frontend/src/         # pages, CriticPanel, MetricsPanel, board, editor
+│   │   ├── routers/      # projects, backlog, sprints, ai, export, import
+│   │   └── services/     # ai_stub, critic, evaluation, pipeline, export, importer
+│   └── tests/            # pure logic + API e2e + import scanner
+└── frontend/src/         # pages, board (FLIP moves), import dialog, theming
 ```
 
 ## Key API routes
@@ -115,6 +174,9 @@ Full script: [docs/DEMO_SCRIPT.md](./docs/DEMO_SCRIPT.md).
 | POST | `/api/projects/{id}/ai/standup` | Status summary |
 | PATCH | `/api/projects/{id}/stories/{sid}` | User edit |
 | GET | `/api/projects/{id}/export?format=markdown\|json` | Export |
+| GET | `/api/import/roots` | Allowed scan roots |
+| POST | `/api/import/scan` | Dry-run preview of a projects folder |
+| POST | `/api/import/apply` | Create / re-sync projects from folders |
 
 ## Non-goals (v1)
 

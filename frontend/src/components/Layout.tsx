@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { ToastProvider } from './Toast'
+import { ThemeToggle } from './ThemeToggle'
 
 export function Layout() {
   const { pathname } = useLocation()
-  const projectsActive =
-    pathname === '/' || pathname.startsWith('/projects')
+  const projectsActive = pathname === '/' || pathname.startsWith('/projects')
 
   const [navOpen, setNavOpen] = useState(false)
 
@@ -82,10 +82,12 @@ export function Layout() {
           <div className="sidebar-foot">
             <div className="user-chip">
               <span className="user-avatar">Y</span>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 500, color: 'var(--text)' }}>You</div>
                 <div style={{ fontSize: 11 }}>demo</div>
               </div>
+              <span style={{ flex: 1 }} />
+              <ThemeToggle />
             </div>
           </div>
         </aside>
@@ -110,6 +112,8 @@ export function Layout() {
               <span className="sidebar-mark">S</span>
               <span>Sprintline</span>
             </NavLink>
+            <span className="topbar-spacer" />
+            <ThemeToggle />
           </header>
           <Outlet />
         </div>

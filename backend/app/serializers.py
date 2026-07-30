@@ -35,6 +35,7 @@ def project_to_dict(p: models.Project) -> dict[str, Any]:
         "brief": p.brief or "",
         "goals": _loads_list(p.goals),
         "constraints": _loads_list(p.constraints),
+        "source_path": p.source_path,
         "created_at": p.created_at,
     }
 

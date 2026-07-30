@@ -142,8 +142,13 @@ def generate_backlog(
 
     goals = _loads_list(p.goals)
     constraints = _loads_list(p.constraints)
+    # Imported projects carry source_path — pack that repo for real AI context.
     result = pipeline.run_backlog_pipeline(
-        p.name, p.brief or "", goals, constraints
+        p.name,
+        p.brief or "",
+        goals,
+        constraints,
+        source_path=p.source_path,
     )
 
     if body.replace:
@@ -213,4 +218,6 @@ def generate_backlog(
         "pipeline": result.get("pipeline"),
         "critic": result.get("critic"),
         "metrics_preview": result.get("metrics_preview"),
+        "codebase_context": result.get("codebase_context"),
+        "llm_error": result.get("llm_error"),
     }

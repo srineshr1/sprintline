@@ -27,6 +27,7 @@ class ProjectOut(BaseModel):
     brief: str
     goals: list[str]
     constraints: list[str]
+    source_path: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -161,6 +162,19 @@ class BacklogGenerateRequest(BaseModel):
     replace: bool = False  # if true, wipe existing epics/stories first
 
 
+class CodebaseContextMeta(BaseModel):
+    """Which repo files were packed for the LLM (bodies omitted)."""
+
+    root: Optional[str] = None
+    exists: bool = False
+    file_paths: list[str] = Field(default_factory=list)
+    file_count: int = 0
+    total_chars: int = 0
+    tree_preview: str = ""
+    note: str = ""
+    skipped_dirs: list[str] = Field(default_factory=list)
+
+
 class BacklogGenerateResponse(BaseModel):
     epics: list[EpicOut]
     rationale: str
@@ -168,6 +182,8 @@ class BacklogGenerateResponse(BaseModel):
     pipeline: Optional[PipelineMeta] = None
     critic: Optional[CriticReport] = None
     metrics_preview: Optional[dict[str, Any]] = None
+    codebase_context: Optional[CodebaseContextMeta] = None
+    llm_error: Optional[str] = None
 
 
 class SprintPlanRequest(BaseModel):
@@ -184,6 +200,7 @@ class SprintPlanResponse(BaseModel):
     agent: str = "sprint_stub"
     pipeline: Optional[PipelineMeta] = None
     critic: Optional[CriticReport] = None
+    llm_error: Optional[str] = None
 
 
 class StandupResponse(BaseModel):
@@ -197,6 +214,7 @@ class StandupResponse(BaseModel):
     pipeline: Optional[PipelineMeta] = None
     critic: Optional[CriticReport] = None
     metrics_snapshot: Optional[dict[str, Any]] = None
+    llm_error: Optional[str] = None
 
 
 class EvaluationResponse(BaseModel):
@@ -213,6 +231,100 @@ class CriticOnlyResponse(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     rationale: str = ""
     agent: str = "critic"
+
+
+# ---- Directory import ----
+class ImportScanRequest(BaseModel):
+    """Dry-run scan. ``root_path`` must resolve inside an allowed root."""
+
+    root_path: Optional[str] = None
+    # When true, pack key files and ask Groq to enrich brief/goals/backlog.
+    use_ai: bool = True
+
+
+class ImportStoryPreview(BaseModel):
+    title: str
+    status: str = "todo"
+    points: int = 3
+    priority: str = "medium"
+    description: str = ""
+
+
+class ImportEpicPreview(BaseModel):
+    title: str
+    stories: list[ImportStoryPreview] = Field(default_factory=list)
+
+
+class ImportProjectPreview(BaseModel):
+    name: str
+    folder: str
+    source_path: str
+    brief: str = ""
+    goals: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    brief_source: Optional[str] = None
+    story_sources: list[str] = Field(default_factory=list)
+    epics: list[ImportEpicPreview] = Field(default_factory=list)
+    epic_count: int = 0
+    story_count: int = 0
+    status_counts: dict[str, int] = Field(default_factory=dict)
+    sample_titles: list[str] = Field(default_factory=list)
+    # Set by the router: an already-imported folder re-syncs instead of
+    # creating a second project.
+    existing_project_id: Optional[int] = None
+    new_story_count: Optional[int] = None
+    # AI enrichment (when use_ai on scan)
+    ai_used: bool = False
+    ai_agent: Optional[str] = None
+    ai_analysis: Optional[str] = None
+    ai_rationale: Optional[str] = None
+    tech_stack: list[str] = Field(default_factory=list)
+    codebase_context: Optional[CodebaseContextMeta] = None
+    llm_error: Optional[str] = None
+
+
+class ImportScanResponse(BaseModel):
+    root_path: str
+    default_root: str = ""
+    projects: list[ImportProjectPreview] = Field(default_factory=list)
+    skipped: list[dict[str, str]] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
+    total_projects: int = 0
+    total_stories: int = 0
+    use_ai: bool = False
+    ai_status: Optional[dict[str, Any]] = None
+
+
+class ImportApplyRequest(BaseModel):
+    root_path: Optional[str] = None
+    # Folder names to import. Empty/omitted means "everything found".
+    selections: list[str] = Field(default_factory=list)
+    use_ai: bool = True
+
+
+class ImportApplyResult(BaseModel):
+    folder: str
+    name: str
+    source_path: str
+    project_id: int
+    epics_created: int = 0
+    stories_created: int = 0
+    resynced: bool = False
+
+
+class ImportApplyResponse(BaseModel):
+    root_path: str
+    imported: list[ImportApplyResult] = Field(default_factory=list)
+    skipped: list[dict[str, str]] = Field(default_factory=list)
+    errors: list[dict[str, str]] = Field(default_factory=list)
+    projects_created: int = 0
+    projects_resynced: int = 0
+    stories_created: int = 0
+
+
+class ImportRootsResponse(BaseModel):
+    default_root: str
+    allowed_roots: list[str] = Field(default_factory=list)
 
 
 # ---- Export ----

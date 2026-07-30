@@ -47,6 +47,7 @@ export function CriticPanel({
             <div
               key={`${f.code}-${f.story_id}-${i}`}
               className={`finding ${f.severity}`}
+              style={{ ['--i' as string]: i }}
             >
               <strong style={{ textTransform: 'uppercase', fontSize: 10 }}>
                 {f.severity}

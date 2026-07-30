@@ -7,6 +7,8 @@ export interface Project {
   brief: string
   goals: string[]
   constraints: string[]
+  /** Folder this project was imported from; null when created by hand. */
+  source_path: string | null
   created_at: string
 }
 
@@ -51,6 +53,101 @@ export interface Sprint {
   items: SprintItem[]
 }
 
+// ---- Directory import ----
+export interface ImportStoryPreview {
+  title: string
+  status: StoryStatus | string
+  points: number
+  priority: Priority | string
+  description?: string
+}
+
+export interface ImportEpicPreview {
+  title: string
+  stories: ImportStoryPreview[]
+}
+
+export interface CodebaseContextMeta {
+  root?: string | null
+  exists: boolean
+  file_paths: string[]
+  file_count: number
+  total_chars: number
+  tree_preview: string
+  note: string
+  skipped_dirs: string[]
+}
+
+export interface ImportProjectPreview {
+  name: string
+  folder: string
+  source_path: string
+  brief: string
+  goals: string[]
+  constraints: string[]
+  brief_source: string | null
+  story_sources: string[]
+  epics: ImportEpicPreview[]
+  epic_count: number
+  story_count: number
+  status_counts: Record<string, number>
+  sample_titles: string[]
+  /** Set when this folder was imported before — apply re-syncs it. */
+  existing_project_id: number | null
+  /** Stories not already present in the existing project. */
+  new_story_count: number | null
+  ai_used?: boolean
+  ai_agent?: string | null
+  ai_analysis?: string | null
+  ai_rationale?: string | null
+  tech_stack?: string[]
+  codebase_context?: CodebaseContextMeta | null
+  llm_error?: string | null
+}
+
+export interface ImportScanResponse {
+  root_path: string
+  default_root: string
+  projects: ImportProjectPreview[]
+  skipped: Array<{ folder: string; reason: string }>
+  errors: Array<{ folder: string; error: string }>
+  total_projects: number
+  total_stories: number
+  use_ai?: boolean
+  ai_status?: {
+    mode: string
+    provider: string
+    model?: string | null
+    configured: boolean
+    llm_active: boolean
+  }
+}
+
+export interface ImportApplyResult {
+  folder: string
+  name: string
+  source_path: string
+  project_id: number
+  epics_created: number
+  stories_created: number
+  resynced: boolean
+}
+
+export interface ImportApplyResponse {
+  root_path: string
+  imported: ImportApplyResult[]
+  skipped: Array<{ folder: string; reason: string }>
+  errors: Array<{ folder: string; error: string }>
+  projects_created: number
+  projects_resynced: number
+  stories_created: number
+}
+
+export interface ImportRootsResponse {
+  default_root: string
+  allowed_roots: string[]
+}
+
 export interface CriticFinding {
   code: string
   severity: string
@@ -82,6 +179,8 @@ export interface BacklogGenerateResponse {
     invest_average_pct?: number
     invest_rationale?: string
   }
+  codebase_context?: CodebaseContextMeta | null
+  llm_error?: string | null
 }
 
 export interface SprintPlanResponse {

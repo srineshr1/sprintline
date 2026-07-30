@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useBodyScrollLock, usePresence } from '../hooks/usePresence'
 
 export function Modal({
@@ -6,11 +7,14 @@ export function Modal({
   onClose,
   children,
   labelledBy,
+  wide = false,
 }: {
   open: boolean
   onClose: () => void
   children: ReactNode
   labelledBy?: string
+  /** Roomier panel for content-heavy dialogs (e.g. the import preview). */
+  wide?: boolean
 }) {
   const { mounted, entered } = usePresence(open, 200)
   useBodyScrollLock(mounted)
@@ -33,7 +37,10 @@ export function Modal({
 
   if (!mounted) return null
 
-  return (
+  // Portal to body so position:fixed is relative to the viewport — never a
+  // transformed ancestor (.page uses animation transforms, which otherwise
+  // pin the dialog off-center inside the content column).
+  return createPortal(
     <div
       className={`modal-backdrop${entered ? ' is-open' : ''}`}
       onClick={onClose}
@@ -41,7 +48,7 @@ export function Modal({
     >
       <div
         ref={panelRef}
-        className={`modal${entered ? ' is-open' : ''}`}
+        className={`modal${wide ? ' modal-lg' : ''}${entered ? ' is-open' : ''}`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -49,6 +56,7 @@ export function Modal({
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

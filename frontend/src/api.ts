@@ -3,6 +3,9 @@ import type {
   CriticReport,
   Epic,
   EvaluationResponse,
+  ImportApplyResponse,
+  ImportRootsResponse,
+  ImportScanResponse,
   Project,
   Sprint,
   SprintPlanResponse,
@@ -155,6 +158,35 @@ export const api = {
 
   evaluate: (projectId: number) =>
     request<EvaluationResponse>(`/projects/${projectId}/ai/evaluate`),
+
+  // ---- Directory import ----
+  /** Allowed scan roots — used to pre-fill the path input. */
+  importRoots: () => request<ImportRootsResponse>('/import/roots'),
+
+  /** Dry run: preview discovered projects and todos. Writes nothing. */
+  importScan: (rootPath?: string, useAi = true) =>
+    request<ImportScanResponse>('/import/scan', {
+      method: 'POST',
+      body: JSON.stringify({ root_path: rootPath || null, use_ai: useAi }),
+    }),
+
+  /**
+   * Create or re-sync the selected folders.
+   * `selections` holds folder names; omit/empty to import everything found.
+   */
+  importApply: (
+    rootPath: string | undefined,
+    selections: string[],
+    useAi = true,
+  ) =>
+    request<ImportApplyResponse>('/import/apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_path: rootPath || null,
+        selections,
+        use_ai: useAi,
+      }),
+    }),
 
   exportUrl: (projectId: number, format: 'markdown' | 'json' = 'markdown') =>
     `${BASE}/projects/${projectId}/export?format=${format}`,

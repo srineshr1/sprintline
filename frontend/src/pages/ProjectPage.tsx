@@ -10,6 +10,7 @@ import { CriticPanel } from '../components/CriticPanel'
 import { MetricsPanel } from '../components/MetricsPanel'
 import { Modal } from '../components/Modal'
 import { RationalePanel } from '../components/RationalePanel'
+import { SegmentedControl } from '../components/SegmentedControl'
 import { SprintBoard } from '../components/SprintBoard'
 import { StoryEditor } from '../components/StoryEditor'
 import { useToast } from '../components/Toast'
@@ -28,9 +29,12 @@ type PriorityFilter = 'all' | 'high' | 'medium' | 'low'
 
 const TABS: Tab[] = ['overview', 'backlog', 'board', 'reports']
 
+/** Landing tab when no `?tab=` is present. Kept out of the URL. */
+const DEFAULT_TAB: Tab = 'overview'
+
 function parseTab(raw: string | null): Tab {
   if (raw && (TABS as string[]).includes(raw)) return raw as Tab
-  return 'board'
+  return DEFAULT_TAB
 }
 
 export function ProjectPage() {
@@ -45,7 +49,8 @@ export function ProjectPage() {
       setSearchParams(
         (prev) => {
           const p = new URLSearchParams(prev)
-          if (next === 'board') p.delete('tab')
+          // Keep the landing tab out of the URL; everything else is shareable.
+          if (next === DEFAULT_TAB) p.delete('tab')
           else p.set('tab', next)
           return p
         },
@@ -67,6 +72,7 @@ export function ProjectPage() {
     null,
   )
   const [aiAgent, setAiAgent] = useState<string | undefined>()
+  const [codeFiles, setCodeFiles] = useState<string[] | null>(null)
   const [criticReport, setCriticReport] = useState<CriticReport | null>(null)
   const [metrics, setMetrics] = useState<EvaluationResponse | null>(null)
   const [selectedStory, setSelectedStory] = useState<Story | null>(null)
@@ -130,6 +136,36 @@ export function ProjectPage() {
 
   const activeSprint = sprints.find((s) => s.status === 'active') || sprints[0]
 
+  /**
+   * Completion rolled up from the stories already in state — no extra request,
+   * and it stays in sync with board moves for free.
+   *
+   * Percentage is points-based when the backlog is estimated, since a 13-point
+   * story finishing is not the same as a 1-pointer; falls back to story counts
+   * when nothing has points yet.
+   */
+  const progress = useMemo(() => {
+    const buckets: Record<string, { count: number; points: number }> = {
+      done: { count: 0, points: 0 },
+      in_progress: { count: 0, points: 0 },
+      todo: { count: 0, points: 0 },
+    }
+    for (const s of stories) {
+      const key = s.status in buckets ? s.status : 'todo'
+      buckets[key].count += 1
+      buckets[key].points += s.points || 0
+    }
+    const totalCount = stories.length
+    const totalPoints = Object.values(buckets).reduce((n, b) => n + b.points, 0)
+    const byPoints = totalPoints > 0
+    const pct = byPoints
+      ? Math.round((buckets.done.points / totalPoints) * 100)
+      : totalCount > 0
+        ? Math.round((buckets.done.count / totalCount) * 100)
+        : 0
+    return { buckets, totalCount, totalPoints, byPoints, pct }
+  }, [stories])
+
   const loadMetrics = useCallback(
     async (opts?: { quiet?: boolean }) => {
       if (!projectId) return
@@ -177,11 +213,17 @@ export function ProjectPage() {
       setAiRationale(res.rationale)
       setAiAgent(res.agent)
       setPipelineRationale(res.pipeline?.rationale || null)
+      setCodeFiles(res.codebase_context?.file_paths ?? null)
       if (res.critic) setCriticReport(res.critic)
       setShowGenerate(false)
       await refresh()
       setTab('backlog')
-      toast('Backlog generated')
+      const n = res.codebase_context?.file_count || 0
+      toast(
+        n > 0
+          ? `Backlog generated via ${res.agent} (${n} files)`
+          : `Backlog generated via ${res.agent}`,
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Generate failed')
     } finally {
@@ -409,6 +451,90 @@ export function ProjectPage() {
               {project.brief || 'No brief yet.'}
             </p>
           </div>
+
+          <div className="panel" style={{ padding: 14 }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                textTransform: 'uppercase',
+                letterSpacing: '0.04em',
+                color: 'var(--text-muted)',
+                marginBottom: 6,
+              }}
+            >
+              Completion
+            </div>
+
+            {progress.totalCount === 0 ? (
+              <p style={{ margin: 0, fontSize: 13, color: 'var(--text-muted)' }}>
+                No stories yet. Generate a backlog to track completion.
+              </p>
+            ) : (
+              <>
+                <div className="progress-head">
+                  <span className="progress-pct">{progress.pct}%</span>
+                  <span className="mono-id">
+                    {progress.byPoints
+                      ? `${progress.buckets.done.points}/${progress.totalPoints} pts done`
+                      : `${progress.buckets.done.count}/${progress.totalCount} stories done`}
+                  </span>
+                </div>
+
+                <div
+                  className="progress-track"
+                  role="img"
+                  aria-label={
+                    `${progress.pct}% complete — ` +
+                    `${progress.buckets.done.count} done, ` +
+                    `${progress.buckets.in_progress.count} in progress, ` +
+                    `${progress.buckets.todo.count} to do`
+                  }
+                >
+                  {(['done', 'in_progress'] as const).map((seg) => {
+                    const b = progress.buckets[seg]
+                    const total = progress.byPoints
+                      ? progress.totalPoints
+                      : progress.totalCount
+                    const value = progress.byPoints ? b.points : b.count
+                    const width = total > 0 ? (value / total) * 100 : 0
+                    return (
+                      <span
+                        key={seg}
+                        className="progress-seg"
+                        data-seg={seg}
+                        style={{ width: `${width}%` }}
+                      />
+                    )
+                  })}
+                </div>
+
+                <div className="progress-legend">
+                  {(
+                    [
+                      ['done', 'Done'],
+                      ['in_progress', 'In progress'],
+                      ['todo', 'To do'],
+                    ] as const
+                  ).map(([seg, label]) => (
+                    <span key={seg} className="progress-legend-item">
+                      <span className="progress-legend-dot" data-seg={seg} />
+                      {label}
+                      <span className="progress-legend-count">
+                        {progress.buckets[seg].count}
+                      </span>
+                      {progress.byPoints && (
+                        <span style={{ color: 'var(--text-muted)' }}>
+                          · {progress.buckets[seg].points} pts
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
           <div
             className="overview-split"
             style={{
@@ -539,25 +665,19 @@ export function ProjectPage() {
           <div className="filter-bar">
             <div className="filter-group">
               <span className="filter-label">Status</span>
-              <div className="seg" role="group" aria-label="Filter by status">
-                {(
+              <SegmentedControl
+                value={statusFilter}
+                ariaLabel="Filter by status"
+                onChange={setStatusFilter}
+                options={
                   [
                     ['all', 'All'],
                     ['todo', 'To do'],
                     ['in_progress', 'In progress'],
                     ['done', 'Done'],
                   ] as const
-                ).map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={`seg-btn${statusFilter === value ? ' active' : ''}`}
-                    onClick={() => setStatusFilter(value)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+                }
+              />
             </div>
 
             <div className="filter-group">
@@ -658,7 +778,7 @@ export function ProjectPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredStories.map((story) => (
+                  {filteredStories.map((story, i) => (
                     <tr
                       key={story.id}
                       className={[
@@ -667,7 +787,15 @@ export function ProjectPage() {
                       ]
                         .filter(Boolean)
                         .join(' ')}
+                      style={{ ['--i' as string]: i }}
+                      tabIndex={0}
                       onClick={() => setSelectedStory(story)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setSelectedStory(story)
+                        }
+                      }}
                     >
                       <td className="mono-id">ST-{story.id}</td>
                       <td style={{ fontWeight: 500, maxWidth: 420 }}>
@@ -708,6 +836,7 @@ export function ProjectPage() {
             selectedId={selectedStory?.id}
             onStatusChange={onStatusChange}
             onOpen={setSelectedStory}
+            loading={loading}
           />
         </div>
       )}
@@ -749,7 +878,7 @@ export function ProjectPage() {
             </button>
           </div>
 
-          {(pipelineRationale || aiRationale) && (
+          {(pipelineRationale || aiRationale || codeFiles) && (
             <div>
               {pipelineRationale && (
                 <RationalePanel title="Pipeline" agent="pipeline">
@@ -759,6 +888,26 @@ export function ProjectPage() {
               {aiRationale && (
                 <RationalePanel title="Agent notes" agent={aiAgent}>
                   {aiRationale}
+                </RationalePanel>
+              )}
+              {codeFiles && codeFiles.length > 0 && (
+                <RationalePanel
+                  title="Files sent to AI"
+                  agent={`${codeFiles.length} files`}
+                >
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: 18,
+                      fontFamily:
+                        'var(--font-mono, ui-monospace, monospace)',
+                      fontSize: 11.5,
+                    }}
+                  >
+                    {codeFiles.map((f) => (
+                      <li key={f}>{f}</li>
+                    ))}
+                  </ul>
                 </RationalePanel>
               )}
             </div>

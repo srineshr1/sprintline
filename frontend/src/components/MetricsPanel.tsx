@@ -31,21 +31,21 @@ export function MetricsPanel({
   return (
     <div style={{ display: 'grid', gap: 12 }}>
       <div className="metric-row">
-        <div className="metric-card">
+        <div className="metric-card" style={{ ['--i' as string]: 0 }}>
           <div className="metric-label">AC coverage</div>
           <div className="metric-value">{ac.coverage_pct}%</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
             {ac.with_ac}/{ac.total_stories} stories
           </div>
         </div>
-        <div className="metric-card">
+        <div className="metric-card" style={{ ['--i' as string]: 1 }}>
           <div className="metric-label">INVEST avg</div>
           <div className="metric-value">{inv.average_pct}%</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
             score {inv.average_score}
           </div>
         </div>
-        <div className="metric-card">
+        <div className="metric-card" style={{ ['--i' as string]: 2 }}>
           <div className="metric-label">Board done</div>
           <div className="metric-value">{board.completion_pct}%</div>
           <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>

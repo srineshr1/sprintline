@@ -1,11 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .database import Base, SessionLocal, engine
-from .routers import ai, backlog, export, projects, sprints
+from .config import get_settings
+from .database import Base, SessionLocal, engine, run_migrations
+from .routers import ai, backlog, export, import_projects, projects, sprints
 from .services.seed import seed_if_empty
 
 Base.metadata.create_all(bind=engine)
+# Patch in columns added after the first release (no-op on a fresh DB).
+run_migrations()
 
 # Demo seed when DB has no projects (first boot / wiped data)
 try:
@@ -38,8 +41,14 @@ app.include_router(backlog.router)
 app.include_router(sprints.router)
 app.include_router(ai.router)
 app.include_router(export.router)
+app.include_router(import_projects.router)
 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "ai-project-lifecycle"}
+    ai = get_settings().ai_status()
+    return {
+        "status": "ok",
+        "service": "ai-project-lifecycle",
+        "ai": ai,
+    }

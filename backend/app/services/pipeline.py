@@ -1,14 +1,14 @@
 """Multi-agent lifecycle pipeline: draft → critic → plan → summarize.
 
-Orchestrates pure agent functions. Callers decide whether to persist/apply;
-pipeline never silently overwrites user-edited DB state.
+Orchestrates agent functions (Groq when configured, else stubs). Callers decide
+whether to persist/apply; pipeline never silently overwrites user-edited DB state.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from . import ai_stub, critic, evaluation
+from . import ai_agents, critic, evaluation
 
 
 def run_backlog_pipeline(
@@ -16,16 +16,20 @@ def run_backlog_pipeline(
     brief: str,
     goals: list[str],
     constraints: list[str],
+    *,
+    source_path: Optional[str] = None,
 ) -> dict[str, Any]:
     """Intake + backlog draft + critic quality pass.
 
     Returns epics (from backlog agent), critic report, pipeline rationale.
+    When ``source_path`` is set, key repository files are packed and sent to the LLM.
     """
-    draft = ai_stub.generate_backlog(name, brief, goals, constraints)
+    draft = ai_agents.generate_backlog(
+        name, brief, goals, constraints, source_path=source_path
+    )
     flat_stories: list[dict[str, Any]] = []
     for i, epic in enumerate(draft.get("epics") or []):
         for j, st in enumerate(epic.get("stories") or []):
-            # Temporary synthetic ids for critic before DB assign
             s = dict(st)
             s.setdefault("id", f"draft-{i}-{j}")
             flat_stories.append(s)
@@ -34,10 +38,17 @@ def run_backlog_pipeline(
     eval_preview = evaluation.ac_coverage(flat_stories)
     invest_preview = evaluation.invest_scores(flat_stories)
 
+    agent = draft.get("agent", "backlog")
+    files_n = 0
+    ctx = draft.get("codebase_context") or {}
+    if isinstance(ctx, dict):
+        files_n = int(ctx.get("file_count") or 0)
+
     pipeline_rationale = (
-        f"[pipeline] backlog_stub drafted {len(draft.get('epics') or [])} epics / "
-        f"{len(flat_stories)} stories; critic flagged "
-        f"{critique['summary']['errors']} errors, "
+        f"[pipeline] {agent} drafted {len(draft.get('epics') or [])} epics / "
+        f"{len(flat_stories)} stories"
+        + (f" using {files_n} repo file(s)" if files_n else "")
+        + f"; critic flagged {critique['summary']['errors']} errors, "
         f"{critique['summary']['warnings']} warnings; "
         f"AC coverage preview {eval_preview['coverage_pct']}%; "
         f"INVEST preview {invest_preview['average_pct']}%. "
@@ -47,9 +58,9 @@ def run_backlog_pipeline(
     return {
         "epics": draft.get("epics") or [],
         "rationale": draft.get("rationale", ""),
-        "agent": draft.get("agent", "backlog_stub"),
+        "agent": agent,
         "pipeline": {
-            "steps": ["intake", "backlog_draft", "critic", "eval_preview"],
+            "steps": ["intake", "codebase_pack", "backlog_draft", "critic", "eval_preview"],
             "rationale": pipeline_rationale,
         },
         "critic": critique,
@@ -58,6 +69,8 @@ def run_backlog_pipeline(
             "invest_average_pct": invest_preview["average_pct"],
             "invest_rationale": invest_preview["rationale"],
         },
+        "codebase_context": draft.get("codebase_context"),
+        "llm_error": draft.get("llm_error"),
     }
 
 
@@ -67,9 +80,8 @@ def run_sprint_pipeline(
     sprint_name: str = "Sprint",
 ) -> dict[str, Any]:
     """Sprint selection + capacity critic."""
-    plan = ai_stub.plan_sprint(stories, capacity_points, sprint_name)
+    plan = ai_agents.plan_sprint(stories, capacity_points, sprint_name)
     selected = plan.get("stories") or []
-    # If stories in plan lack full fields, resolve from input by id
     by_id = {s.get("id"): s for s in stories}
     resolved = []
     for s in selected:
@@ -81,21 +93,18 @@ def run_sprint_pipeline(
         capacity_points,
         total_points=plan.get("total_points"),
     )
-
-    # Also soft-critique backlog quality for selected items
     story_critique = critic.critique_backlog(resolved)
 
+    agent = plan.get("agent", "sprint")
     pipeline_rationale = (
-        f"[pipeline] sprint_stub selected {len(plan.get('suggested_story_ids') or [])} "
+        f"[pipeline] {agent} selected {len(plan.get('suggested_story_ids') or [])} "
         f"stories ({plan.get('total_points')}/{capacity_points} pts); "
         f"capacity critic: {cap_critique['summary'].get('errors', 0)} error(s); "
         f"selected-story critic: {story_critique['summary']['errors']} error(s), "
         f"{story_critique['summary']['warnings']} warning(s)."
     )
 
-    # Merge findings (capacity first)
     merged_findings = list(cap_critique.get("findings") or [])
-    # Avoid double-counting capacity-only codes from story pass
     merged_findings.extend(story_critique.get("findings") or [])
 
     return {
@@ -103,9 +112,9 @@ def run_sprint_pipeline(
         "total_points": plan.get("total_points") or 0,
         "rationale": plan.get("rationale", ""),
         "stories": resolved,
-        "agent": plan.get("agent", "sprint_stub"),
+        "agent": agent,
         "pipeline": {
-            "steps": ["priority_select", "capacity_check", "critic"],
+            "steps": ["llm_or_priority_select", "capacity_check", "critic"],
             "rationale": pipeline_rationale,
         },
         "critic": {
@@ -123,6 +132,7 @@ def run_sprint_pipeline(
             + story_critique.get("rationale", ""),
             "agent": "critic",
         },
+        "llm_error": plan.get("llm_error"),
     }
 
 
@@ -133,11 +143,10 @@ def run_standup_pipeline(
     sprints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Standup summary + board quality notes + optional sprint metrics snippet."""
-    summary = ai_stub.standup_summary(stories, project_name, recent_events)
+    summary = ai_agents.standup_summary(stories, project_name, recent_events)
     board_critique = critic.critique_backlog(
         [s for s in stories if (s.get("status") or "") != "done"]
     )
-    # Only surface errors/warnings for open work
     open_findings = [
         f
         for f in board_critique.get("findings") or []
@@ -145,9 +154,10 @@ def run_standup_pipeline(
     ][:15]
 
     eval_bundle = evaluation.evaluate_project(stories, sprints)
+    agent = summary.get("agent", "standup")
 
     pipeline_rationale = (
-        f"[pipeline] standup_stub drafted status from board; "
+        f"[pipeline] {agent} drafted status from board; "
         f"{len(open_findings)} open quality flag(s) on incomplete work; "
         f"eval AC {eval_bundle['ac_coverage']['coverage_pct']}% / "
         f"INVEST {eval_bundle['invest']['average_pct']}%."
