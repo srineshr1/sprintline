@@ -41,7 +41,7 @@ Product brief: [PROJECT.md](./PROJECT.md)
 | Export Markdown / JSON | ✅ |
 | College docs package | ✅ |
 
-AI agents use **Groq** when `GROQ_API_KEY` is set in `backend/.env` (packs real project files for import + backlog generation). Without a key they fall back to **deterministic stubs** so the app still demos offline.
+AI agents use **Groq** when `GROQ_API_KEY` is set in `backend/.env`. **Import Scan** is always free (README/TODO heuristics). **AI enrich** runs only on Import for *selected* folders (compact card + cheap `GROQ_IMPORT_MODEL` + disk cache) so free-tier daily limits are not burned on bulk scans. **Generate backlog** still uses the quality model and optional full pack. Without a key, agents fall back to **deterministic stubs**.
 
 ## Quick start
 
@@ -82,7 +82,8 @@ Copy `backend/.env.example` → `backend/.env`:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `GROQ_API_KEY` | — | Enables real AI (Groq). Required for true LLM backlog / import analysis. |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Chat model id on Groq. |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Quality model (backlog / sprint / standup). |
+| `GROQ_IMPORT_MODEL` | `llama-3.1-8b-instant` | Cheap model for import enrich only. |
 | `SPRINTLINE_AI_MODE` | `auto` | `auto` (Groq if key set), `groq`, or `stub` (force offline). |
 | `PROJECTS_ROOT` | repo's parent directory | Folder scanned by **Import from folder**. Scanning is confined to it. |
 | `PROJECTS_ROOTS` | — | Extra allowed roots, `:`-separated (e.g. `/work/a:/work/b`). |
@@ -98,7 +99,7 @@ PROJECTS_ROOT=~/Projects
 PROJECTS_ROOT=~/Projects uvicorn app.main:app --reload --port 8000
 ```
 
-**Import + AI:** Scan packs README, package manifests, and key source files (skips `.env`, `node_modules`, binaries) and sends them to Groq. The UI lists every file path that was included. **Generate backlog** on an imported project re-reads that `source_path` the same way.
+**Import + AI:** Scan never calls Groq. On Import with “AI enrich”, only **selected** folders get a compact card (tree + README/manifests) via the cheap import model; results are cached under `backend/data/ai_cache/`. Daily rate-limit errors stop further AI calls mid-batch so the rest still import heuristically.
 
 Paths outside the allowed roots are rejected (400), including `..` traversal
 and symlinks pointing out of the root.

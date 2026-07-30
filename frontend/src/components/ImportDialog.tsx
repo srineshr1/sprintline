@@ -265,7 +265,7 @@ export function ImportDialog({
     } finally {
       setScanning(false)
     }
-  }, [rootPath, useAi])
+  }, [rootPath])
 
   const apply = useCallback(async () => {
     if (selected.size === 0) return
