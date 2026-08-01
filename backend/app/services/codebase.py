@@ -10,11 +10,12 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-# Limits — sized for Groq free-tier ~12k TPM (prompt + completion share the budget).
-MAX_FILES = 18
-MAX_TOTAL_CHARS = 18_000
-MAX_FILE_CHARS = 2_800
-MAX_TREE_ENTRIES = 120
+# Limits — frugal free-tier defaults (~12k TPM shared by prompt + completion).
+# generate_backlog overrides via Settings (SPRINTLINE_BACKLOG_MAX_*).
+MAX_FILES = 12
+MAX_TOTAL_CHARS = 10_000
+MAX_FILE_CHARS = 2_200
+MAX_TREE_ENTRIES = 80
 MAX_DEPTH = 3
 
 SKIP_DIR_NAMES = {
@@ -407,15 +408,15 @@ _COMPACT_NAMES = {
 def collect_compact_card(
     root: str | Path,
     *,
-    max_total_chars: int = 4_500,
-    readme_chars: int = 1_200,
+    max_total_chars: int = 4_000,
+    readme_chars: int = 1_000,
 ) -> dict[str, Any]:
     """Token-frugal pack: shallow tree + README/manifests only (no full src dump).
 
     Aimed at import enrichment on free-tier Groq (~1–2k tokens/folder).
     """
     base = collect_project_context(
-        root, max_files=8, max_total_chars=max_total_chars
+        root, max_files=6, max_total_chars=max_total_chars
     )
     if not base.get("exists"):
         return base
@@ -468,8 +469,8 @@ def collect_compact_card(
         pass
 
     found.sort(key=lambda t: (-t[0], t[1]))
-    for _pri, rel, full in found[:10]:
-        limit = readme_chars if "readme" in rel.lower() else 800
+    for _pri, rel, full in found[:8]:
+        limit = readme_chars if "readme" in rel.lower() else 700
         remaining = max_total_chars - total - len(tree)
         if remaining < 200:
             break

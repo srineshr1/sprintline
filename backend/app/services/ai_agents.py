@@ -16,6 +16,11 @@ from . import ai_stub, codebase
 from .llm import LLMError, chat_json, model_label
 
 
+def _compact_json(obj: Any) -> str:
+    """Minified JSON for prompts — fewer whitespace tokens than indent=2."""
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
 def _normalize_priority(raw: Any) -> str:
     s = str(raw or "medium").strip().lower()
     if s in ("high", "urgent", "critical", "p0", "p1"):
@@ -107,7 +112,9 @@ def generate_backlog(
     ctx_summary = None
     if source_path:
         ctx = codebase.collect_project_context(
-            source_path, max_files=16, max_total_chars=16_000
+            source_path,
+            max_files=settings.backlog_max_files,
+            max_total_chars=settings.backlog_max_chars,
         )
         ctx_summary = codebase.context_summary(ctx)
 
@@ -121,7 +128,11 @@ def generate_backlog(
             )
         return draft
 
-    code_block = codebase.format_context_for_prompt(ctx) if ctx else "(No source_path linked.)"
+    code_block = (
+        codebase.format_context_for_prompt(ctx, max_chars=settings.backlog_max_chars)
+        if ctx
+        else "(No source_path linked.)"
+    )
 
     system = (
         "You are an expert Agile product manager and tech lead. "
@@ -136,10 +147,10 @@ Brief:
 {brief or '(empty)'}
 
 Goals:
-{json.dumps(goals or [], indent=2)}
+{_compact_json(goals or [])}
 
 Constraints:
-{json.dumps(constraints or [], indent=2)}
+{_compact_json(constraints or [])}
 
 Repository context (file tree + selected sources — use this heavily):
 {code_block}
@@ -174,7 +185,12 @@ Rules:
 """
 
     try:
-        data = chat_json(system=system, user=user, temperature=0.35, max_tokens=3500)
+        data = chat_json(
+            system=system,
+            user=user,
+            temperature=0.35,
+            max_tokens=settings.backlog_max_tokens,
+        )
         epics = _coerce_epics(data)
         if not epics:
             raise LLMError("Model returned no usable epics")
@@ -232,7 +248,7 @@ def plan_sprint(
 Capacity points: {capacity_points}
 
 Open stories (JSON):
-{json.dumps(slim, indent=2)}
+{_compact_json(slim)}
 
 Return:
 {{
@@ -249,7 +265,12 @@ Rules:
 """
 
     try:
-        data = chat_json(system=system, user=user, temperature=0.2, max_tokens=2000)
+        data = chat_json(
+            system=system,
+            user=user,
+            temperature=0.2,
+            max_tokens=settings.sprint_max_tokens,
+        )
         valid_ids = {s.get("id") for s in stories}
         by_id = {s.get("id"): s for s in stories}
         selected_ids: list[int] = []
@@ -321,7 +342,7 @@ def standup_summary(
     user = f"""Project: {project_name}
 
 Board snapshot:
-{json.dumps(board, indent=2)}
+{_compact_json(board)}
 
 Return:
 {{
@@ -331,7 +352,12 @@ Return:
 }}
 """
     try:
-        data = chat_json(system=system, user=user, temperature=0.4, max_tokens=1500)
+        data = chat_json(
+            system=system,
+            user=user,
+            temperature=0.4,
+            max_tokens=settings.standup_max_tokens,
+        )
         summary = str(data.get("summary") or "").strip() or base["summary"]
         blockers = data.get("blockers")
         if not isinstance(blockers, list):
@@ -373,7 +399,9 @@ def analyze_project_folder(
     import_model = settings.groq_import_model
 
     # Compact card only (README/manifests + shallow tree) — ~1–2k tokens.
-    ctx = codebase.collect_compact_card(path)
+    ctx = codebase.collect_compact_card(
+        path, max_total_chars=settings.import_max_chars
+    )
     ctx_summary = codebase.context_summary(ctx)
 
     if not settings.use_llm() or not ctx.get("exists"):
@@ -407,21 +435,24 @@ def analyze_project_folder(
         "Infer purpose, goals, constraints, tech stack, and a short realistic backlog. "
         "JSON only. Be concise."
     )
+    heuristic_card = {
+        "name": heuristic.get("name"),
+        "brief": (heuristic.get("brief") or "")[:500],
+        "goals": (heuristic.get("goals") or [])[:6],
+        "constraints": (heuristic.get("constraints") or [])[:6],
+        "story_count": heuristic.get("story_count"),
+        "sample_titles": (heuristic.get("sample_titles") or [])[:6],
+        "story_sources": heuristic.get("story_sources"),
+    }
+    # Prompt format budget slightly above pack so tree+files fit cleanly.
+    prompt_card_chars = min(settings.import_max_chars + 800, 5_500)
     user = f"""Folder: {path.name}
 
 Heuristic (may be incomplete):
-{json.dumps({
-    'name': heuristic.get('name'),
-    'brief': (heuristic.get('brief') or '')[:500],
-    'goals': (heuristic.get('goals') or [])[:6],
-    'constraints': (heuristic.get('constraints') or [])[:6],
-    'story_count': heuristic.get('story_count'),
-    'sample_titles': (heuristic.get('sample_titles') or [])[:6],
-    'story_sources': heuristic.get('story_sources'),
-}, indent=2)}
+{_compact_json(heuristic_card)}
 
 Compact repository card:
-{codebase.format_context_for_prompt(ctx, max_chars=5_000)}
+{codebase.format_context_for_prompt(ctx, max_chars=prompt_card_chars)}
 
 Return JSON:
 {{
@@ -460,7 +491,7 @@ Rules:
             system=system,
             user=user,
             temperature=0.25,
-            max_tokens=1800,
+            max_tokens=settings.import_max_tokens,
             model=import_model,
             retries=1,
         )
